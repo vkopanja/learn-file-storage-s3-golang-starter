@@ -2,11 +2,17 @@ package main
 
 import (
 	"fmt"
+	"io"
+	"mime/multipart"
 	"net/http"
+	"os"
+	"path/filepath"
 
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
 )
+
+const maxMemory = 10 << 20 // 10 MB
 
 func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Request) {
 	videoIDString := r.PathValue("videoID")
@@ -28,10 +34,76 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-
 	fmt.Println("uploading thumbnail for video", videoID, "by user", userID)
 
-	// TODO: implement the upload here
+	err = r.ParseMultipartForm(maxMemory)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Couldn't parse multipart form", err)
+		return
+	}
+	file, fh, err := r.FormFile("thumbnail")
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Couldn't get file", err)
+		return
 
+	}
+	defer func(file multipart.File) {
+		err := file.Close()
+		if err != nil {
+			fmt.Println("Couldn't close file", err)
+		}
+	}(file)
+
+	mediaType := fh.Header.Get("Content-Type")
+	byteSlice, err := io.ReadAll(file)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't read file", err)
+		return
+	}
+
+	video, err := cfg.db.GetVideo(videoID)
+	if err != nil {
+		respondWithError(w, http.StatusNotFound, "Couldn't get video", err)
+		return
+	}
+
+	if video.UserID != userID {
+		respondWithError(w, http.StatusUnauthorized, "You can't upload a thumbnail for this video", err)
+		return
+	}
+
+	videoThumbnails[videoID] = thumbnail{
+		data:      byteSlice,
+		mediaType: mediaType,
+	}
+
+	fileExt := mediaType[6:]
+	thumbnailPath := filepath.Join(cfg.assetsRoot, fmt.Sprintf("%s.%s", videoID.String(), fileExt))
+	thumbnailURL := fmt.Sprintf("http://localhost:%s/%s", cfg.port, thumbnailPath)
+	video.ThumbnailURL = &thumbnailURL
+
+	create, err := os.Create(thumbnailPath)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't create thumbnail file", err)
+		return
+	}
+
+	// as we've already read the file, we need to reset the file pointer before copying
+	_, err = file.Seek(0, io.SeekStart)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "There was an issue reading the file", err)
+		return
+	}
+
+	if _, err := io.Copy(create, file); err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't write thumbnail file", err)
+		return
+	}
+
+	err = cfg.db.UpdateVideo(video)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't update video", err)
+		return
+	}
 	respondWithJSON(w, http.StatusOK, struct{}{})
 }
