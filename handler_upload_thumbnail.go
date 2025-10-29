@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -78,7 +80,8 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 	}
 
 	fileExt := mediaType[6:]
-	thumbnailPath := filepath.Join(cfg.assetsRoot, fmt.Sprintf("%s.%s", videoID.String(), fileExt))
+
+	thumbnailPath := filepath.Join(cfg.assetsRoot, fmt.Sprintf("%s.%s", makeRandName(), fileExt))
 	thumbnailURL := fmt.Sprintf("http://localhost:%s/%s", cfg.port, thumbnailPath)
 	video.ThumbnailURL = &thumbnailURL
 
@@ -106,4 +109,16 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	respondWithJSON(w, http.StatusOK, struct{}{})
+}
+
+func makeRandName() string {
+	var destBytes = make([]byte, base64.RawURLEncoding.EncodedLen(32))
+	var randBytes = make([]byte, 32)
+	_, err := rand.Read(randBytes)
+	if err != nil {
+		fmt.Println("Couldn't generate random bytes", err)
+		return ""
+	}
+	base64.RawURLEncoding.Encode(destBytes, randBytes)
+	return string(destBytes)
 }
