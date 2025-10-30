@@ -2,12 +2,14 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"mime"
 	"mime/multipart"
 	"net/http"
 	"os"
+	"os/exec"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
@@ -119,8 +121,21 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	aspectRatio := "other"
+	ratio, err := getVideoAspectRatio(temp.Name())
+	if err == nil {
+		switch ratio {
+		case "16:9":
+			aspectRatio = "landscape"
+		case "9:16":
+			aspectRatio = "portrait"
+		default:
+			aspectRatio = "other"
+		}
+	}
+
 	bucketName := "tubely-04073108"
-	videoKey := fmt.Sprintf("%s.mp4", makeRandName())
+	videoKey := fmt.Sprintf("%s/%s.mp4", aspectRatio, makeRandName())
 	fileUrl := fmt.Sprintf(bucketUrl, bucketName, "eu-central-1", videoKey)
 	_, err = cfg.s3Client.PutObject(r.Context(), &s3.PutObjectInput{
 		Bucket:      &bucketName,
@@ -141,4 +156,30 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	}
 
 	respondWithJSON(w, http.StatusOK, struct{}{})
+}
+
+func getVideoAspectRatio(filePath string) (string, error) {
+	output, err := exec.Command("ffprobe", "-v", "error", "-print_format", "json", "-show_streams", filePath).Output()
+	if err != nil {
+		return "", err
+	}
+
+	var probeOutput FFProbeResponse
+	err = json.Unmarshal(output, &probeOutput)
+	if err != nil {
+		return "", err
+	}
+
+	for _, stream := range probeOutput.Streams {
+		aspectRatio := stream.DisplayAspectRatio
+
+		if aspectRatio == "16:9" {
+			return "16:9", nil
+		} else if aspectRatio == "9:16" {
+			return "9:16", nil
+		} else {
+			return "other", nil
+		}
+	}
+	return "other", nil
 }
