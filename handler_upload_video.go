@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,14 +11,16 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
+	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/database"
 	"github.com/google/uuid"
 )
 
 const maxFileSize = 1 << 30 // 1 GB
-const bucketUrl = "https://%s.s3.%s.amazonaws.com/%s"
 
 func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxFileSize)
@@ -146,11 +149,9 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	bucketName := "tubely-04073108"
 	videoKey := fmt.Sprintf("%s/%s.mp4", aspectRatio, makeRandName())
-	fileUrl := fmt.Sprintf(bucketUrl, bucketName, "eu-central-1", videoKey)
 	_, err = cfg.s3Client.PutObject(r.Context(), &s3.PutObjectInput{
-		Bucket:      &bucketName,
+		Bucket:      &cfg.s3Bucket,
 		Key:         &videoKey,
 		Body:        bytes.NewReader(processFileSlice),
 		ContentType: &mediaType,
@@ -160,7 +161,8 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	video.VideoURL = &fileUrl
+	presignedUrl := fmt.Sprintf("%s,%s", cfg.s3Bucket, videoKey)
+	video.VideoURL = &presignedUrl
 	err = cfg.db.UpdateVideo(video)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't update video URL", err)
@@ -205,4 +207,37 @@ func processVideoForFastStart(filePath string) (string, error) {
 	}
 
 	return processFilePath, nil
+}
+
+func generatePresignedURL(s3Client *s3.Client, bucket, key string, expireTime time.Duration) (string, error) {
+	client := s3.NewPresignClient(s3Client)
+	object, err := client.PresignGetObject(context.Background(), &s3.GetObjectInput{
+		Bucket: &bucket,
+		Key:    &key,
+	}, s3.WithPresignExpires(expireTime))
+
+	if err != nil {
+		return "", err
+	}
+
+	return object.URL, nil
+}
+
+func (cfg *apiConfig) dbVideoToSignedVideo(video database.Video) (database.Video, error) {
+	if video.VideoURL == nil {
+		return video, nil
+	}
+
+	parts := strings.Split(*video.VideoURL, ",")
+	if len(parts) != 2 {
+		return video, fmt.Errorf("video URL not in expected format: %s", *video.VideoURL)
+	}
+
+	presignedUrl, err := generatePresignedURL(cfg.s3Client, parts[0], parts[1], 10*time.Minute)
+	if err != nil {
+		return video, err
+	}
+
+	video.VideoURL = &presignedUrl
+	return video, nil
 }
