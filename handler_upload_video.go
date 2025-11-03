@@ -134,13 +134,25 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
+	outPath, err := processVideoForFastStart(temp.Name())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't process video", err)
+		return
+	}
+
+	processFileSlice, err := os.ReadFile(outPath)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't read processed file", err)
+		return
+	}
+
 	bucketName := "tubely-04073108"
 	videoKey := fmt.Sprintf("%s/%s.mp4", aspectRatio, makeRandName())
 	fileUrl := fmt.Sprintf(bucketUrl, bucketName, "eu-central-1", videoKey)
 	_, err = cfg.s3Client.PutObject(r.Context(), &s3.PutObjectInput{
 		Bucket:      &bucketName,
 		Key:         &videoKey,
-		Body:        temp,
+		Body:        bytes.NewReader(processFileSlice),
 		ContentType: &mediaType,
 	})
 	if err != nil {
@@ -182,4 +194,15 @@ func getVideoAspectRatio(filePath string) (string, error) {
 		}
 	}
 	return "other", nil
+}
+
+func processVideoForFastStart(filePath string) (string, error) {
+	processFilePath := fmt.Sprintf("%s.processing", filePath)
+
+	err := exec.Command("ffmpeg", "-i", filePath, "-c", "copy", "-movflags", "faststart", "-f", "mp4", processFilePath).Run()
+	if err != nil {
+		return "", err
+	}
+
+	return processFilePath, nil
 }
